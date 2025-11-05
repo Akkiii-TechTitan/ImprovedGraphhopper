@@ -1,6 +1,9 @@
+# app.py — PathFinder
 import streamlit as st
-import io, csv, folium
-from streamlit_folium import st_folium
+import io, csv, hashlib
+import folium
+from streamlit.components.v1 import html as st_html
+
 from graphhopper_utils import (
     get_route, get_route_history, clear_route_history,
     add_favorite, get_favorites, remove_favorite,
@@ -8,105 +11,153 @@ from graphhopper_utils import (
     reverse_last_route, set_vehicle_profile, get_vehicle_profile
 )
 
-# ---------- Page setup ----------
-st.set_page_config(page_title="Pathfinder", layout="wide")
+# ---------- Page ----------
+st.set_page_config(page_title="PathFinder", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #e2e8f0; font-family: 'Inter', sans-serif; }
-    h1,h2,h3 { color: #f8fafc; }
-    .card { background: #1e293b; border-radius: 12px; padding: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
-    .stButton>button { background-color: #2563eb; color: white; border-radius: 8px; font-weight: 600; }
-    .stButton>button:hover { background-color: #1e40af; }
+:root {
+  --glass-bg: rgba(255,255,255,0.06);
+  --glass-border: rgba(255,255,255,0.1);
+  --glass-blur: 8px;
+}
+body { background: linear-gradient(135deg, #060b10 0%, #0c1219 100%); }
+.stApp { font-family: 'Inter', sans-serif; color: #e6eef8; }
+.glass { background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 14px; padding: 1rem; box-shadow: 0 10px 30px rgba(2,6,23,0.6); backdrop-filter: blur(var(--glass-blur)); }
+h1,h2,h3 { color: #f8fafc; margin: 0; }
+.footer-note { color: #9aa9bd; font-size:0.85rem; margin-top:6px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Pathfinder")
-st.caption("Destination over misdirection.")
-# ---------- Folium map helper ----------
-def show_folium_map(lat1, lon1, lat2, lon2, route_points=None):
-    """Display Folium interactive map with markers and route line."""
-    center = [(lat1 + lat2) / 2, (lon1 + lon2) / 2]
-    m = folium.Map(location=center, zoom_start=13, tiles="CartoDB dark_matter")
+st.title("PathFinder")
+st.caption("Destination over misdirection")
 
-    folium.Marker([lat1, lon1], popup="Start", icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker([lat2, lon2], popup="Destination", icon=folium.Icon(color="red")).add_to(m)
-
-    if route_points:
-        folium.PolyLine(route_points, color="blue", weight=4, opacity=0.8).add_to(m)
-
-    st_folium(m, width=700, height=400)
-
-# ---------- Initialize session state ----------
-for key in ["last_route", "recommendation_result"]:
-    if key not in st.session_state:
-        st.session_state[key] = None
+# ---------- Session State ----------
+if "waypoints" not in st.session_state: st.session_state.waypoints = []
+if "map_theme" not in st.session_state: st.session_state.map_theme = "dark"
+if "last_route" not in st.session_state: st.session_state.last_route = None
+if "cached_map_html" not in st.session_state: st.session_state.cached_map_html = None
+if "cached_hash" not in st.session_state: st.session_state.cached_hash = None
 
 # ---------- Sidebar ----------
 with st.sidebar:
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.header("⚙️ Settings")
-    current_vehicle = get_vehicle_profile()
-    vehicle = st.selectbox("Vehicle profile", ["car", "bike", "foot", "airplane"],index=["car", "bike", "foot", "airplane"].index(current_vehicle))
+    current = get_vehicle_profile()
+    vehicle = st.selectbox("Vehicle profile", ["car", "bike", "foot", "airplane"],
+                           index=["car","bike","foot","airplane"].index(current) if current in ["car","bike","foot","airplane"] else 0)
     if st.button("Set vehicle"):
         if set_vehicle_profile(vehicle):
             st.success(f"Vehicle set to {vehicle}")
+        else:
+            st.warning("Airplane mode can't be saved as default.")
+    st.markdown("---")
+    map_theme = st.radio("Map theme", ["dark", "light", "watercolor", "toner"],
+                         index=["dark","light","watercolor","toner"].index(st.session_state.map_theme))
+    st.session_state.map_theme = map_theme
     st.markdown("---")
     if st.button("↩️ Reverse Last Route"):
         with st.spinner("Reversing..."):
             res = reverse_last_route()
         if res.get("status") == 200:
             st.session_state.last_route = res
+            st.session_state.cached_map_html = None
             st.success(f"Reversed: {res['origin']} ➜ {res['destination']}")
         else:
             st.error(res.get("error"))
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ---------- Map tiles helper ----------
+def _map_tiles(theme: str):
+    return {
+        "dark": "CartoDB dark_matter",
+        "light": "OpenStreetMap",
+        "watercolor": "Stamen Watercolor",
+        "toner": "Stamen Toner"
+    }.get(theme, "OpenStreetMap")
+
+# ---------- Build folium map and return HTML ----------
+def build_folium_html(route_points, origin_coords, dest_coords, theme):
+    center = [(origin_coords[0] + dest_coords[0]) / 2, (origin_coords[1] + dest_coords[1]) / 2]
+    m = folium.Map(location=center, zoom_start=13, tiles=_map_tiles(theme))
+    folium.Marker(origin_coords, popup="Start", icon=folium.Icon(color="green")).add_to(m)
+    folium.Marker(dest_coords, popup="Destination", icon=folium.Icon(color="red")).add_to(m)
+    if route_points and len(route_points) > 1:
+        folium.PolyLine(route_points, color="#2b6cb0", weight=5, opacity=0.9).add_to(m)
+    return m._repr_html_()
 
 # ---------- Tabs ----------
-tab1, tab2, tab3, tab4 = st.tabs(["🧭 Route Planner", "🏝️ Recommendations", "⭐ Favorites", "🕒 History"])
+tab1, tab2, tab3, tab4 = st.tabs(["🧭 Planner", "🏝️ Recommendations", "⭐ Favorites", "📈 Dashboard"])
 
-# ========== ROUTE PLANNER ==========
 with tab1:
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.subheader("Find a Route")
-    col1, col2 = st.columns(2)
-    with col1:
-        origin = st.text_input("Origin", placeholder="e.g., Ayala Center Cebu")
-    with col2:
-        destination = st.text_input("Destination", placeholder="e.g., Magellan's Cross, Cebu City")
-    vehicle_choice = st.selectbox("Vehicle (optional)", ["", "car", "bike", "foot", "airplane"], index=0)
+    left, right = st.columns([1, 2])
 
-    if st.button("Find Route", use_container_width=True):
-        if not origin or not destination:
-            st.warning("Please fill both fields.")
-        else:
-            with st.spinner("Fetching route..."):
-                res = get_route(origin, destination, vehicle_choice or None)
-            if res.get("status") == 200:
-                st.session_state.last_route = res
-                st.success(f"Route: {res['origin']} ➜ {res['destination']} ({res['vehicle']})")
+    with left:
+        origin = st.text_input("Origin")
+        destination = st.text_input("Destination")
+        vehicle_choice = st.selectbox("Vehicle (optional)", ["", "car", "bike", "foot", "airplane"])
+        st.markdown("**Waypoints** — Add intermediate stops")
+        c1, c2 = st.columns([4,1])
+        new_wp = c1.text_input("Add waypoint", key="wp_input")
+        if c2.button("Add"):
+            if new_wp.strip():
+                st.session_state.waypoints.append(new_wp.strip())
+                st.session_state.cached_map_html = None
+        if st.session_state.waypoints:
+            for i, wp in enumerate(st.session_state.waypoints):
+                cc1, cc2 = st.columns([8,1])
+                cc1.write(f"{i+1}. {wp}")
+                if cc2.button("❌", key=f"rmwp{i}"):
+                    st.session_state.waypoints.pop(i)
+                    st.session_state.cached_map_html = None
+        if st.button("Find Route", use_container_width=True):
+            if not origin or not destination:
+                st.warning("Please fill origin and destination.")
             else:
-                st.error(res.get("error"))
-                st.session_state.last_route = None
+                with st.spinner("Fetching route..."):
+                    res = get_route(origin, destination, vehicle_choice or None, waypoints=st.session_state.waypoints)
+                if res.get("status") == 200:
+                    st.session_state.last_route = res
+                    st.session_state.cached_map_html = None
+                    st.success(f"Route: {res['origin']} ➜ {res['destination']} ({res['vehicle']})")
+                else:
+                    st.error(res.get("error"))
+                    st.session_state.last_route = None
 
-    # Keep displaying the last successful route
-    if st.session_state.last_route:
+    with right:
         res = st.session_state.last_route
-        st.markdown(f"**Distance:** {res['distance_km']:.2f} km / {res['distance_mi']:.2f} mi")
-        st.markdown(f"**Duration:** {res['duration']}")
-        lat1, lon1 = res["origin_coords"]
-        lat2, lon2 = res["dest_coords"]
-        show_folium_map(lat1, lon1, lat2, lon2, res.get("route_points"))
-        with st.expander("📋 Directions"):
-            for d in res["directions"]:
-                st.markdown(f"**{d['step']}**. {d['text']} ({d['distance_km']:.2f} km)")
+        if res:
+            st.markdown(f"**{res['origin']} ➜ {res['destination']}** — {res.get('waypoint_names', [])}")
+            st.markdown(f"**Distance:** {res['distance_km']:.2f} km")
+            st.markdown(f"**Duration:** {res['duration']}")
+            # compute simple hash of route points + theme to check cache
+            route_repr = str(res.get("route_points", [])) + st.session_state.map_theme
+            route_hash = hashlib.sha256(route_repr.encode("utf-8")).hexdigest()
+            if st.session_state.cached_map_html is None or st.session_state.cached_hash != route_hash:
+                lat1, lon1 = res["origin_coords"]
+                lat2, lon2 = res["dest_coords"]
+                html = build_folium_html(res.get("route_points", []), (lat1, lon1), (lat2, lon2), st.session_state.map_theme)
+                st.session_state.cached_map_html = html
+                st.session_state.cached_hash = route_hash
+            # embed cached html
+            st_html(st.session_state.cached_map_html, height=520)
+            with st.expander("📋 Directions"):
+                for d in res.get("directions", []):
+                    st.markdown(f"{d['step']}. {d['text']} ({d['distance_km']:.2f} km)")
+        else:
+            st.info("Search a route to preview the map.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== RECOMMENDATIONS ==========
 with tab2:
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.subheader("Recommendations")
     cities = get_recommendation_cities()
     city = st.selectbox("City", [""] + cities, index=0)
     spots = get_recommendation_spots(city) if city else []
     spot = st.selectbox("Spot", [""] + spots, index=0)
     start = st.text_input("Starting point", placeholder="Enter your starting location")
-
     if st.button("Get Recommended Route"):
         if not city or not spot or not start:
             st.warning("Please fill all fields.")
@@ -115,28 +166,32 @@ with tab2:
             with st.spinner("Fetching route..."):
                 res = get_route(start, dest)
             if res.get("status") == 200:
-                st.session_state.recommendation_result = res
+                st.session_state.last_route = res
+                st.session_state.cached_map_html = None
                 st.success(f"{res['origin']} ➜ {res['destination']}")
             else:
                 st.error(res.get("error"))
-                st.session_state.recommendation_result = None
-
-    if st.session_state.recommendation_result:
-        res = st.session_state.recommendation_result
-        st.markdown(f"**Distance:** {res['distance_km']:.2f} km / {res['distance_mi']:.2f} mi")
+                st.session_state.last_route = None
+    if st.session_state.last_route:
+        res = st.session_state.last_route
+        st.markdown(f"**Distance:** {res['distance_km']:.2f} km")
         st.markdown(f"**Duration:** {res['duration']}")
-        lat1, lon1 = res["origin_coords"]
-        lat2, lon2 = res["dest_coords"]
-        show_folium_map(lat1, lon1, lat2, lon2, res.get("route_points"))
-        with st.expander("📋 Directions"):
-            for d in res["directions"]:
-                st.markdown(f"{d['step']}. {d['text']} ({d['distance_km']:.2f} km)")
+        # refresh cached map if needed
+        route_repr = str(res.get("route_points", [])) + st.session_state.map_theme
+        route_hash = hashlib.sha256(route_repr.encode("utf-8")).hexdigest()
+        if st.session_state.cached_map_html is None or st.session_state.cached_hash != route_hash:
+            lat1, lon1 = res["origin_coords"]
+            lat2, lon2 = res["dest_coords"]
+            st.session_state.cached_map_html = build_folium_html(res.get("route_points", []), (lat1, lon1), (lat2, lon2), st.session_state.map_theme)
+            st.session_state.cached_hash = route_hash
+        st_html(st.session_state.cached_map_html, height=520)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== FAVORITES ==========
 with tab3:
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.subheader("Favorites")
-    name = st.text_input("Favorite name")
-    loc = st.text_input("Location")
+    name = st.text_input("Favorite name", key="fav_name")
+    loc = st.text_input("Location", key="fav_loc")
     if st.button("Add Favorite"):
         if name and loc:
             add_favorite(name, loc)
@@ -153,23 +208,31 @@ with tab3:
                 st.experimental_rerun()
     else:
         st.info("No favorites yet.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ========== HISTORY ==========
 with tab4:
-    st.subheader("Route History (in-memory)")
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
+    st.subheader("Mini Dashboard")
     hist = get_route_history()
+    total_trips = len(hist)
+    total_distance = sum(float(r.get("Distance (km)", 0)) for r in hist)
+    total_secs = 0
+    for r in hist:
+        try:
+            h, m, s = map(int, r.get("Duration", "0:0:0").split(":"))
+            total_secs += h*3600 + m*60 + s
+        except:
+            pass
+    avg = total_secs // total_trips if total_trips else 0
+    avg_str = f"{avg//3600:02d}:{(avg%3600)//60:02d}:{avg%60:02d}" if total_trips else "00:00:00"
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Trips", total_trips)
+    c2.metric("Total Distance (km)", f"{total_distance:.2f}")
+    c3.metric("Avg Duration", avg_str)
     if hist:
         st.dataframe(hist, use_container_width=True)
-        col1, col2 = st.columns(2)
-        if col1.button("🧹 Clear History"):
-            clear_route_history()
-            st.success("History cleared.")
-        if col2.button("📄 Export CSV"):
-            buf = io.StringIO()
-            writer = csv.DictWriter(buf, fieldnames=["Start", "End", "Vehicle", "Distance (km)", "Duration"])
-            writer.writeheader()
-            for row in get_route_history():
-                writer.writerow(row)
-            st.download_button("⬇️ Download", buf.getvalue(), "route_history.csv", "text/csv")
     else:
-        st.info("No routes yet.")
+        st.info("No trips yet.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="footer-note">TechTitan @ 2024.</div>', unsafe_allow_html=True)
