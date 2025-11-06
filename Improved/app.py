@@ -92,29 +92,58 @@ tab1, tab2, tab3, tab4 = st.tabs(["🧭 Planner", "🏝️ Recommendations", "�
 with tab1:
     st.markdown('<div class="glass">', unsafe_allow_html=True)
     st.subheader("Find a Route")
+
+    # Load favorites for quick selection
+    favorites = get_favorites()
+    fav_options = [""] + [f"{fav['name']} — {fav['location']}" for fav in favorites]
+
     left, right = st.columns([1, 2])
 
     with left:
-        origin = st.text_input("Origin")
-        destination = st.text_input("Destination")
+        st.markdown("### Input Locations")
+        st.write("Select from favorites or type manually.")
+
+        # Origin input
+        origin_choice = st.selectbox("Select Origin (optional)", fav_options, key="origin_fav")
+        origin = st.text_input("Origin (manual entry)", key="origin_text")
+        if origin_choice:
+            # extract the actual location string from selected favorite
+            origin = origin_choice.split(" — ", 1)[-1]
+
+        # Destination input
+        destination_choice = st.selectbox("Select Destination (optional)", fav_options, key="dest_fav")
+        destination = st.text_input("Destination (manual entry)", key="dest_text")
+        if destination_choice:
+            destination = destination_choice.split(" — ", 1)[-1]
+
         vehicle_choice = st.selectbox("Vehicle (optional)", ["", "car", "bike", "foot", "airplane"])
+
+        # Waypoints with favorites
         st.markdown("**Waypoints** — Add intermediate stops")
-        c1, c2 = st.columns([4,1])
-        new_wp = c1.text_input("Add waypoint", key="wp_input")
+        c1, c2 = st.columns([4, 1])
+        new_wp_choice = c1.selectbox("Select waypoint from favorites (optional)", fav_options, key="wp_fav")
+        new_wp_manual = c1.text_input("Add waypoint manually", key="wp_manual")
+
+        # Prefer favorite waypoint if selected
+        new_wp = new_wp_choice.split(" — ", 1)[-1] if new_wp_choice else new_wp_manual
+
         if c2.button("Add"):
             if new_wp.strip():
                 st.session_state.waypoints.append(new_wp.strip())
                 st.session_state.cached_map_html = None
+
         if st.session_state.waypoints:
             for i, wp in enumerate(st.session_state.waypoints):
-                cc1, cc2 = st.columns([8,1])
-                cc1.write(f"{i+1}. {wp}")
-                if cc2.button("❌", key=f"rmwp{i}"):
+                c1, c2 = st.columns([8, 1])
+                c1.write(f"{i+1}. {wp}")
+                if c2.button("❌", key=f"rmwp{i}"):
                     st.session_state.waypoints.pop(i)
                     st.session_state.cached_map_html = None
+
+        # Find route button
         if st.button("Find Route", use_container_width=True):
             if not origin or not destination:
-                st.warning("Please fill origin and destination.")
+                st.warning("Please fill or select both origin and destination.")
             else:
                 with st.spinner("Fetching route..."):
                     res = get_route(origin, destination, vehicle_choice or None, waypoints=st.session_state.waypoints)
@@ -132,7 +161,8 @@ with tab1:
             st.markdown(f"**{res['origin']} ➜ {res['destination']}** — {res.get('waypoint_names', [])}")
             st.markdown(f"**Distance:** {res['distance_km']:.2f} km")
             st.markdown(f"**Duration:** {res['duration']}")
-            # compute simple hash of route points + theme to check cache
+            # compute simple hash for map cache
+            import hashlib
             route_repr = str(res.get("route_points", [])) + st.session_state.map_theme
             route_hash = hashlib.sha256(route_repr.encode("utf-8")).hexdigest()
             if st.session_state.cached_map_html is None or st.session_state.cached_hash != route_hash:
@@ -142,12 +172,13 @@ with tab1:
                 st.session_state.cached_map_html = html
                 st.session_state.cached_hash = route_hash
             # embed cached html
-            st_html(st.session_state.cached_map_html, height=520)
+            st.components.v1.html(st.session_state.cached_map_html, height=520)
             with st.expander("📋 Directions"):
                 for d in res.get("directions", []):
                     st.markdown(f"{d['step']}. {d['text']} ({d['distance_km']:.2f} km)")
         else:
             st.info("Search a route to preview the map.")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 with tab2:
@@ -205,7 +236,11 @@ with tab3:
             c1.write(f"**{i+1}. {f['name']}** — {f['location']}")
             if c2.button("❌ Remove", key=f"rem{i}"):
                 remove_favorite(i)
-                st.experimental_rerun()
+                try:
+                    st.rerun()
+                except AttributeError:
+                    st.experimental_rerun()
+
     else:
         st.info("No favorites yet.")
     st.markdown('</div>', unsafe_allow_html=True)
