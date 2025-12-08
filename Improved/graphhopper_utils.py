@@ -40,7 +40,7 @@ def geocode_location(place: str) -> Dict:
     if not place or not place.strip():
         return {"status": 400, "error": "Location is empty."}
     try:
-        resp = requests.get(GEOCODE_URL, params={"q": place, "limit": 1, "key": API_KEY}, timeout=10)
+        resp = requests.get(GEOCODE_URL, params={"q": place, "limit": 1, "key": API_KEY}, timeout=30)
         data = resp.json()
     except Exception as e:
         return {"status": 500, "error": f"Geocoding error: {e}"}
