@@ -20,6 +20,8 @@ from graphhopper_utils import (
     get_vehicle_profile,
 )
 
+from cost_utils import CostConfig, estimate_trip_cost
+
 # ---------- Page ----------
 st.set_page_config(
     page_title="PathFinder",
