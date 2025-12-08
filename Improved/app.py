@@ -321,6 +321,42 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    # 🔽 NEW: Trip cost defaults
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sidebar-section-label">Trip cost defaults</div>',
+        unsafe_allow_html=True,
+    )
+
+    fuel_price = st.number_input(
+        "Fuel price (PHP per liter)",
+        min_value=1.0,
+        max_value=200.0,
+        value=75.0,
+        step=1.0,
+    )
+    car_efficiency = st.number_input(
+        "Car efficiency (km per liter)",
+        min_value=1.0,
+        max_value=40.0,
+        value=12.0,
+        step=1.0,
+    )
+    airplane_cost_per_km = st.number_input(
+        "Airplane est. cost per km (PHP)",
+        min_value=0.0,
+        max_value=100.0,
+        value=8.0,
+        step=0.5,
+    )
+
+    # Build a CostConfig object we can reuse in Planner + Recommendations
+    cost_cfg = CostConfig(
+        car_km_per_liter=car_efficiency,
+        fuel_price_per_liter=fuel_price,
+        airplane_cost_per_km=airplane_cost_per_km,
+    )
+
     st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="sidebar-note">Tip: Save frequent places as favorites so you can tap them directly in the planner.</div>',
@@ -409,6 +445,11 @@ with tab1:
                         st.metric("Duration", duration)
                     with colm3:
                         st.metric("Vehicle", used_vehicle)
+                        
+                    # 🔽 NEW: estimated cost metric
+                    est_cost = estimate_trip_cost(distance_km, used_vehicle, cost_cfg)
+                    if est_cost > 0:
+                        st.metric("Estimated cost (PHP)", f"₱{est_cost:,.0f}")
 
                     route_points = result.get("route_points")
                     origin_coords = result.get("origin_coords")
@@ -596,6 +637,11 @@ with tab4:
                         st.metric("Duration", duration)
                     with colm3:
                         st.metric("Vehicle", used_vehicle)
+                        
+                    # 🔽 NEW: estimated cost metric
+                    est_cost = estimate_trip_cost(distance_km, used_vehicle, cost_cfg)
+                    if est_cost > 0:
+                        st.metric("Estimated cost (PHP)", f"₱{est_cost:,.0f}")
 
                     route_points = res.get("route_points")
                     origin_coords = res.get("origin_coords")
